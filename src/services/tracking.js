@@ -30,39 +30,32 @@ function haversine(lat1, lon1, lat2, lon2) {
 ================================ */
 function toPSTDate(dateInput) {
   if (!dateInput) return null;
-  
   const date = new Date(dateInput);
   if (isNaN(date.getTime())) return null;
-  
-  const pstString = date.toLocaleString('en-US', { 
-    timeZone: 'America/Los_Angeles' 
+
+  const pstpString = date.toLocaleString('en-US', { 
+    timeZone: 'America/Los_Angeles',
+    hour12: false 
   });
-  return new Date(pstString);
+ 
+  return new Date(pstpString);
 }
 
 function getPSTDayStart(dateInput) {
-  const date = toPSTDate(dateInput);
-  if (!date) return null;
-  
-  date.setHours(0, 0, 0, 0);
-  return date;
+  const pstDate = toPSTDate(dateInput);
+  if (!pstDate) return null;
+ 
+  return pstDate;
 }
 
 function getPSTNow() {
-  const now = new Date();
-  const pstString = now.toLocaleString('en-US', { 
-    timeZone: 'America/Los_Angeles' 
-  });
-  return new Date(pstString);
+  return toPSTDate(new Date());
 }
 
-/* ===============================
-   SAMSARA: Improved location fetcher
-================================ */
+
 async function fetchSamsaraLocation(samsaraVehicleId, apiKey, companySource) {
-  console.log(`\n🚛 === SAMSARA DEBUG START ===`);
-  console.log(`   Company: ${companySource}`);
-  console.log(`   Vehicle ID: ${samsaraVehicleId}`);
+
+ 
 
   if (!samsaraVehicleId || !apiKey) {
     throw new Error(`Missing credentials - VehicleID: ${!!samsaraVehicleId}, APIKey: ${!!apiKey}`);
@@ -83,7 +76,7 @@ async function fetchSamsaraLocation(samsaraVehicleId, apiKey, companySource) {
       }
     });
 
-    console.log(`   ✅ Response Status: ${res.status}`);
+
 
     if (res.status === 401) {
       throw new Error(`❌ Unauthorized - Invalid API key for ${companySource}`);
@@ -121,8 +114,7 @@ async function fetchSamsaraLocation(samsaraVehicleId, apiKey, companySource) {
       throw new Error(`❌ Invalid coordinates`);
     }
 
-    console.log(`   ✅ SUCCESS - Lat: ${loc.latitude}, Lng: ${loc.longitude}, Speed: ${loc.speed || 0}`);
-    console.log(`🚛 === SAMSARA DEBUG END ===\n`);
+
 
     return {
       lat: +loc.latitude,
@@ -133,16 +125,16 @@ async function fetchSamsaraLocation(samsaraVehicleId, apiKey, companySource) {
     };
 
   } catch (error) {
-    console.log(`   ❌ === SAMSARA ERROR ===`);
+    
     
     if (error.response) {
-      console.log(`   Status: ${error.response.status}`);
+      
       throw new Error(`Samsara API ${error.response.status}`);
     } else if (error.request) {
-      console.log(`   No response received`);
+      
       throw new Error(`No response from Samsara - timeout or network issue`);
     } else {
-      console.log(`   Error:`, error.message);
+    
       throw error;
     }
   }
@@ -158,7 +150,7 @@ async function getVehicleLocation(companyName, samsaraVehicleId) {
 
   const normalized = companyName.toUpperCase().trim();
   
-  console.log(`\n🏢 Company Routing: ${companyName} → ${normalized}`);
+
 
   // HA TRANSPORTATION
   if (normalized.includes("HA TRANSPORTATION") || 
@@ -204,9 +196,7 @@ async function getVehicleLocation(companyName, samsaraVehicleId) {
   throw new Error(`❌ Unsupported company: "${companyName}"`);
 }
 
-/* ===============================
-   GEOCODING
-================================ */
+
 async function geocodeAddress(address) {
   if (!address) throw new Error("Address missing");
 
@@ -244,9 +234,7 @@ async function geocodeAddress(address) {
   }
 }
 
-/* ===============================
-   GOOGLE ROUTES: Traffic-aware ETA
-================================ */
+
 async function getGoogleRoutesETA(originLat, originLng, destAddress) {
   try {
     const res = await axios.post(
@@ -292,9 +280,7 @@ async function getGoogleRoutesETA(originLat, originLng, destAddress) {
   }
 }
 
-/* ===============================
-   FALLBACK: Speed-based ETA
-================================ */
+
 function getIntelligentSpeed(currentSpeed, distanceKm) {
   if (currentSpeed > 60) return currentSpeed * 0.85;
   if (currentSpeed > 10) return currentSpeed * 0.75;
@@ -322,10 +308,8 @@ function getFallbackETA(originLat, originLng, destLat, destLng, currentSpeed) {
   };
 }
 
-/* ===============================
-   DELIVERY TIME CHECK: Aaj ya Kal?
-================================ */
-function getDeliveryDay(etaHours, nowPST) {
+
+function getDeliveryDay(etaHours, nowPST) {       
   const deliveryTime = new Date(nowPST);
   deliveryTime.setHours(deliveryTime.getHours() + etaHours);
   
@@ -353,17 +337,21 @@ function getDeliveryDay(etaHours, nowPST) {
 export async function processInTransitLoads(loads, truckMap) {
   const truckDataMap = new Map(Object.entries(truckMap));
   const nowPST = getPSTNow();
+
+
+
   const results = { inTransit: [], errors: [] };
 
   for (const [loadId, load] of Object.entries(loads)) {
     if (load.loadStatus?.toUpperCase() !== "IN TRANSIT") continue;
 
-    console.log(`\n📦 Processing Load: ${load.loadNumber}`);
+    
 
     try {
       const loadTruckId = extractSingleValue(load.truck);
       const loadSamsaraId = extractSingleValue(load.samsaraVehicleId);
 
+      // Find truck
       let truckData =
         truckDataMap.get(loadTruckId) ||
         [...truckDataMap.values()].find(
@@ -377,14 +365,17 @@ export async function processInTransitLoads(loads, truckMap) {
       }
 
 
+      // Get live location
       let liveLocation = null;
       if (loadSamsaraId) {
         liveLocation = await getVehicleLocation(
           truckData.companyName,
           loadSamsaraId
         );
+        
       }
 
+      // Calculate ETA using Google API
       let etaData = null;
       if (liveLocation && load.receiver) {
         etaData = await getGoogleRoutesETA(
@@ -394,6 +385,7 @@ export async function processInTransitLoads(loads, truckMap) {
         );
         
         if (!etaData) {
+          // Fallback to geocoding + haversine
           const destCoords = await geocodeAddress(load.receiver);
           etaData = getFallbackETA(
             liveLocation.lat,
@@ -409,7 +401,33 @@ export async function processInTransitLoads(loads, truckMap) {
         throw new Error("Could not calculate ETA");
       }
 
+      
       const deliveryDay = getDeliveryDay(etaData.durationHours, nowPST);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      
+      // Calculate estimated delivery time - PST mein
+      const estimatedDeliveryTime = new Date(nowPST);
+      estimatedDeliveryTime.setMinutes(estimatedDeliveryTime.getMinutes() + etaData.durationMinutes);
+
+    
+
+
+      
+      
+
       results.inTransit.push({
         loadNumber: load.loadNumber,
         truckName: truckData.truckName,
@@ -418,154 +436,156 @@ export async function processInTransitLoads(loads, truckMap) {
         etaHours: etaData.durationHours,
         etaMinutes: etaData.durationMinutes,
         distanceMiles: etaData.distanceMiles,
-        deliveryDay: deliveryDay,
+        deliveryDay: deliveryDay, // TODAY, TOMORROW, LATER
+        estimatedDeliveryTime: estimatedDeliveryTime.toISOString(),
         currentSpeed: liveLocation?.speed || 0,
         source: etaData.source
       });
 
+    
+
     } catch (err) {
-      console.error(`❌ ERROR: ${err.message}`);
+    
       results.errors.push({
         loadNumber: load.loadNumber,
         error: err.message
       });
     }
   }
+
+  
   return results;
 }
 
 /* ===============================
-   NEW: Calculate Available Trucks (FRESH LOGIC)
+   FIXED: Calculate Available Trucks
+   Logic: Jo truck NA in-transit, NA booked = AVAILABLE
 ================================ */
 export function calculateAvailableTrucks(inTransitResults, bookedLoads, allTrucks) {
   const nowPST = getPSTNow();
   const todayStart = new Date(nowPST);
-  todayStart.setHours(0, 0, 0, 0);
+
+
+
+  // console.log(`\n📅 Today's PST Start: `,inTransitResults);
+ 
+  // console.log(`\n📅 Today's PST Start: `,inTransitResults.length);
   
   const twoDaysLater = new Date(todayStart);
   twoDaysLater.setDate(twoDaysLater.getDate() + 2);
 
-  // Single source of truth for truck status
-  const truckStatus = {}; // truckId -> {status: 'available'/'busy', reason: string}
 
-  /* ==========================================
-     STEP 1: Mark all In-Transit trucks
-  ========================================== */
-  console.log(`\n📋 STEP 1: Processing In-Transit Trucks`);
-  
+  const availableTrucks = [];
+  const inTransitTruckIds = new Set();
+  const bookedTruckIds = new Set();
+
+  // Step 1: Identify ALL in-transit trucks
+ 
   for (const inTransit of inTransitResults) {
-    const truckId = inTransit.truckId;
-    
-    if (inTransit.deliveryDay === "TODAY") {
-      console.log(`   🚚 ${inTransit.truckName} (${truckId}) delivers TODAY`);
-      
-      // Check if truck has booking today
-      const hasBookingToday = bookedLoads.some(booking => {
-        const bookingTruckId = extractSingleValue(booking.truck);
-        const puDate = getPSTDayStart(booking.puDateTime);
-        
-        return bookingTruckId === truckId && 
-               puDate && 
-               puDate.getTime() === todayStart.getTime();
-      });
-
-      if (hasBookingToday) {
-        console.log(`      ❌ BUSY (has booking today)`);
-        truckStatus[truckId] = {
-          status: 'busy',
-          reason: 'In-transit today with booking afterwards'
-        };
-      } else {
-        console.log(`      ✅ AVAILABLE (no booking today)`);
-        truckStatus[truckId] = {
-          status: 'available',
-          reason: 'In-transit today, no booking afterwards',
-          truckName: inTransit.truckName,
-          availableFrom: todayStart.toLocaleDateString()
-        };
-      }
-    } else {
-      console.log(`   🚚 ${inTransit.truckName} (${truckId}) delivers TOMORROW/LATER`);
-      console.log(`      ❌ BUSY`);
-      truckStatus[truckId] = {
-        status: 'busy',
-        reason: 'In-transit, delivers tomorrow or later'
-      };
-    }
+    inTransitTruckIds.add(inTransit.truckId);
+  
   }
 
-  /* ==========================================
-     STEP 2: Process Booked trucks
-  ========================================== */
-  console.log(`\n📋 STEP 2: Processing Booked Trucks`);
-  
+  // Step 2: Identify ALL booked trucks
+ 
   for (const booking of bookedLoads) {
     const truckId = extractSingleValue(booking.truck);
     if (!truckId) continue;
     
-    // Skip if already processed
-    if (truckStatus[truckId]) {
+    const puDate = getPSTDayStart(booking.puDateTime);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    bookedTruckIds.add(truckId);
+    
+    
+  }
+
+  // Step 3: Find completely FREE trucks (unique)
+  
+  
+  for (const [truckId, truckData] of Object.entries(allTrucks)) {
+    // Agar truck in-transit hai YA booked hai = SKIP
+    if (inTransitTruckIds.has(truckId) || bookedTruckIds.has(truckId)) {
       continue;
     }
 
-    const puDate = getPSTDayStart(booking.puDateTime);
-    if (!puDate) continue;
-
-    console.log(`   🚚 Load ${booking.loadNumber} on truck ${truckId}: PU on ${puDate.toLocaleDateString()}`);
-
-    if (puDate >= twoDaysLater) {
-      console.log(`      ✅ AVAILABLE (2+ days free)`);
-      truckStatus[truckId] = {
-        status: 'available',
-        reason: 'Booked 2+ days later',
-        truckName: allTrucks[truckId]?.truckName || truckId,
-        availableFrom: todayStart.toLocaleDateString(),
-        availableUntil: puDate.toLocaleDateString()
-      };
-    } else {
-      console.log(`      ❌ BUSY (pickup within 2 days)`);
-      truckStatus[truckId] = {
-        status: 'busy',
-        reason: 'Booked within 2 days'
-      };
-    }
+    // Bhai ye truck 100% FREE hai!
+  
+    
+    availableTrucks.push({
+      truckName: truckData.truckName,
+      truckId: truckId,
+      companyName: truckData.companyName,
+      reason: "Not in-transit and not booked",
+      availableFrom: todayStart.toLocaleDateString()
+    });
   }
 
-  /* ==========================================
-     BUILD FINAL RESULTS
-  ========================================== */
-  const availableTrucks = [];
-  const busyTrucks = [];
+  // Step 4: Additional check - In-transit trucks delivering TODAY with no next booking
+  
+  
+  const alreadyAddedTruckIds = new Set(availableTrucks.map(t => t.truckId));
+  
+  for (const inTransit of inTransitResults) {
+    if (inTransit.deliveryDay !== "TODAY") continue;
 
-  for (const [truckId, status] of Object.entries(truckStatus)) {
-    if (status.status === 'available') {
+    // Skip if already added in Step 3
+    if (alreadyAddedTruckIds.has(inTransit.truckId)) {
+   
+      continue;
+    }
+
+    // Check if this truck has ANY booking
+    const hasAnyBooking = bookedTruckIds.has(inTransit.truckId);
+
+    if (!hasAnyBooking) {
+      
+      
       availableTrucks.push({
-        truckId: truckId,
-        truckName: status.truckName,
-        reason: status.reason,
-        availableFrom: status.availableFrom,
-        availableUntil: status.availableUntil
+        truckName: inTransit.truckName,
+        truckId: inTransit.truckId,
+        reason: "Delivering today with no next booking",
+        availableFrom: new Date(inTransit.estimatedDeliveryTime).toLocaleDateString(),
+        estimatedFreeTime: new Date(inTransit.estimatedDeliveryTime).toLocaleString()
       });
+      alreadyAddedTruckIds.add(inTransit.truckId);
     } else {
-      busyTrucks.push(truckId);
+      
     }
   }
 
-  const totalTrucks = Object.keys(allTrucks).length;
-
-  console.log(`\n📊 FINAL SUMMARY:`);
-  console.log(`   Total Trucks: ${totalTrucks}`);
-  console.log(`   Available: ${availableTrucks.length}`);
-  console.log(`   Busy: ${busyTrucks.length}`);
-  console.log(`   Verification: ${availableTrucks.length} + ${busyTrucks.length} = ${availableTrucks.length + busyTrucks.length} (should be ${totalTrucks})`);
+  // Final Summary
+  const totalBusy = inTransitTruckIds.size + bookedTruckIds.size - 
+                    [...inTransitTruckIds].filter(id => bookedTruckIds.has(id)).length;
 
   return {
     availableTrucks,
-    busyTrucks,
+    inTransitTruckIds: Array.from(inTransitTruckIds),
+    bookedTruckIds: Array.from(bookedTruckIds),
     summary: {
-      total: totalTrucks,
+      total: Object.keys(allTrucks).length,
+      inTransit: inTransitTruckIds.size,
+      booked: bookedTruckIds.size,
       available: availableTrucks.length,
-      busy: busyTrucks.length
+      busy: totalBusy
     }
   };
 }

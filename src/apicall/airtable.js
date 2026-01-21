@@ -54,13 +54,13 @@ export async function fetchCompleteAirtableData(config) {
       shipperReceiverTableID
     } = config;
 
-    console.log("🚀 Starting data fetch...");
+    
 
     const loadRecords = await fetchLoads(tableID, recordIDs, viewID);
-    console.log(`✅ Fetched ${loadRecords.length} load records`);
+    
 
     const truckRecords = await fetchTrucks(truckTableID, truckViewID);
-    console.log(`✅ Fetched ${truckRecords.length} truck records`);
+   
 
     const truckMap = {};
     for (const t of truckRecords) {
@@ -89,13 +89,13 @@ export async function fetchCompleteAirtableData(config) {
         ? await fetchShipperReceiver(shipperReceiverTableID, [...srIds])
         : { records: [], recordMap: new Map() };
 
-    console.log(`✅ Fetched ${shipperReceiverRecords.length} shipper/receiver records`);
+ 
 
     const stops = stopTableID && stopIds.size > 0 
       ? await fetchStops(stopTableID, [...stopIds])
       : [];
 
-    console.log(`✅ Fetched ${stops.length} stop records`);
+    ;
 
     const loads = {};
     
@@ -125,7 +125,7 @@ export async function fetchCompleteAirtableData(config) {
       };
     }
 
-    console.log("✅ Data fetch complete");
+    
 
     return {
       loads,
