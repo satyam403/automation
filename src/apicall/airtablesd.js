@@ -5,17 +5,24 @@ dotenv.config();
 const base = new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(process.env.AIRTABLE_BASE_ID);
 export async function fetchTableRecords(tableName, view) {
   try {
-    const records = [];
+    // const records = [];
     const query = view ? base(tableName).select({ view }) : base(tableName).select();
+
+    console.log("Tbale: ", tableName, " view name:", view)
    
-    await query.eachPage((pageRecords, fetchNextPage) => {
-      pageRecords.forEach((record) => {
-        records.push(record.fields);
-      });
-      fetchNextPage();
-    });
+    // await query.eachPage((pageRecords, fetchNextPage) => {
+    //   pageRecords.forEach((record) => {
+    //     records.push(record.fields);
+    //   });
+    //   fetchNextPage();
+    // });
    
+    // return records;
+
+    const records = await fetchAllRecords(query);
     return records;
+    
+
   } catch (err) {
     console.error("Airtable fetch error:", err);
     return [];
@@ -63,4 +70,26 @@ export async function trailersIfs(tableName, recordIds ) {
     console.error("Airtable fetch error:", err);
     return [];
   }
+}
+
+
+async function fetchAllRecords(query) {
+  const allRecords = [];
+  let page = 0;
+
+  await query.eachPage((pageRecords, fetchNextPage) => {
+    page++;
+    console.log(`📄 Page ${page} received:`, pageRecords.length);
+
+    pageRecords.forEach((record) => {
+      allRecords.push(record.fields);
+    });
+
+    console.log("📦 Records so far:", allRecords.length);
+
+    fetchNextPage();
+  });
+
+  console.log("🏁 FINAL records length (NEW):", allRecords.length);
+  return allRecords;
 }

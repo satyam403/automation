@@ -25,38 +25,18 @@ function haversine(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-/* ===============================
-   HELPER: Safe date conversion to PST
-================================ */
-function toPSTDate(dateInput) {
-  if (!dateInput) return null;
-  const date = new Date(dateInput);
-  if (isNaN(date.getTime())) return null;
-
-  const pstpString = date.toLocaleString('en-US', { 
-    timeZone: 'America/Los_Angeles',
-    hour12: false 
-  });
- 
-  return new Date(pstpString);
-}
-
-function getPSTDayStart(dateInput) {
-  const pstDate = toPSTDate(dateInput);
-  if (!pstDate) return null;
- 
-  return pstDate;
-}
-
 function getPSTNow() {
-  return toPSTDate(new Date());
+  return new Date(
+    new Date().toLocaleString("en-US", {
+      timeZone: "America/Los_Angeles"
+    })
+  );
 }
 
-
+/* ===============================
+   SAMSARA API
+================================ */
 async function fetchSamsaraLocation(samsaraVehicleId, apiKey, companySource) {
-
- 
-
   if (!samsaraVehicleId || !apiKey) {
     throw new Error(`Missing credentials - VehicleID: ${!!samsaraVehicleId}, APIKey: ${!!apiKey}`);
   }
@@ -76,127 +56,244 @@ async function fetchSamsaraLocation(samsaraVehicleId, apiKey, companySource) {
       }
     });
 
-
-
     if (res.status === 401) {
-      throw new Error(`❌ Unauthorized - Invalid API key for ${companySource}`);
+      throw new Error(`Unauthorized - Invalid API key for ${companySource}`);
     }
     
     if (res.status === 403) {
-      throw new Error(`❌ Forbidden - No access to vehicle ${samsaraVehicleId}`);
+      throw new Error(`Forbidden - No access to vehicle ${samsaraVehicleId}`);
     }
 
     if (res.status === 404) {
-      throw new Error(`❌ Vehicle ${samsaraVehicleId} not found in Samsara`);
+      throw new Error(`Vehicle ${samsaraVehicleId} not found in Samsara`);
     }
 
     if (res.status >= 400) {
-      throw new Error(`❌ Samsara API error ${res.status}`);
+      throw new Error(`Samsara API error ${res.status}`);
     }
 
     if (!res.data?.data || !Array.isArray(res.data.data) || res.data.data.length === 0) {
-      throw new Error(`❌ Empty data array`);
+      throw new Error(`Empty data array`);
     }
 
     const vehicle = res.data.data.find(v => v.id === samsaraVehicleId);
     
     if (!vehicle) {
-      throw new Error(`❌ Vehicle ${samsaraVehicleId} not in response`);
+      throw new Error(`Vehicle ${samsaraVehicleId} not in response`);
     }
 
     if (!vehicle.locations || vehicle.locations.length === 0) {
-      throw new Error(`❌ No location data for vehicle ${samsaraVehicleId}`);
+      throw new Error(`No location data for vehicle ${samsaraVehicleId}`);
     }
 
     const loc = vehicle.locations[0];
     
     if (!loc.latitude || !loc.longitude) {
-      throw new Error(`❌ Invalid coordinates`);
+      throw new Error(`Invalid coordinates`);
     }
-
-
 
     return {
       lat: +loc.latitude,
       lng: +loc.longitude,
       speed: +(loc.speed || 0),
       time: loc.time,
-      source: companySource
+      source: 'SAMSARA'
     };
 
   } catch (error) {
-    
-    
     if (error.response) {
-      
       throw new Error(`Samsara API ${error.response.status}`);
     } else if (error.request) {
-      
       throw new Error(`No response from Samsara - timeout or network issue`);
     } else {
-    
       throw error;
     }
   }
 }
 
 /* ===============================
+   SKYBITZ API with Auth
+================================ */
+let skybitzToken = null;
+let skybitzTokenExpiry = null;
+
+async function getSkybitzToken() {
+  const username = process.env.SKYBITZ_USER;
+  const password = process.env.SKYBITZ_PASS;
+
+  if (!username || !password) {
+    throw new Error('SKYBITZ_USERNAME or SKYBITZ_PASSWORD not set');
+  }
+
+  // Check if token is still valid (with 5 min buffer)
+  if (skybitzToken && skybitzTokenExpiry && Date.now() < skybitzTokenExpiry - 300000) {
+    return skybitzToken;
+  }
+
+  try {
+    const res = await axios.post(
+      'https://api.skybitz.com/auth/login',
+      {
+        username: username,
+        password: password
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      }
+    );
+
+    if (!res.data?.token) {
+      throw new Error('No token in Skybitz auth response');
+    }
+
+    skybitzToken = res.data.token;
+    // Token usually valid for 24 hours, store expiry
+    skybitzTokenExpiry = Date.now() + (23 * 60 * 60 * 1000); // 23 hours
+
+    return skybitzToken;
+
+  } catch (error) {
+    skybitzToken = null;
+    skybitzTokenExpiry = null;
+    throw new Error(`Skybitz auth failed: ${error.message}`);
+  }
+}
+
+async function fetchSkybitzLocation(truckNumber) {
+  if (!truckNumber) {
+    throw new Error('Missing truck number for Skybitz');
+  }
+
+  try {
+    const token = await getSkybitzToken();
+
+    const url = `https://api.skybitz.com/v1/assets/${truckNumber}/location`;
+    
+    const res = await axios.get(url, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json'
+      },
+      timeout: 15000
+    });
+
+    if (!res.data || !res.data.latitude || !res.data.longitude) {
+      throw new Error('Invalid Skybitz response');
+    }
+
+    return {
+      lat: +res.data.latitude,
+      lng: +res.data.longitude,
+      speed: +(res.data.speed || 0),
+      time: res.data.timestamp,
+      source: 'SKYBITZ'
+    };
+
+  } catch (error) {
+    // If auth error, reset token and retry once
+    if (error.response?.status === 401 && skybitzToken) {
+      skybitzToken = null;
+      skybitzTokenExpiry = null;
+      
+      try {
+        const newToken = await getSkybitzToken();
+        const retryRes = await axios.get(
+          `https://api.skybitz.com/v1/assets/${truckNumber}/location`,
+          {
+            headers: {
+              'Authorization': `Bearer ${newToken}`,
+              'Accept': 'application/json'
+            },
+            timeout: 15000
+          }
+        );
+
+        if (!retryRes.data || !retryRes.data.latitude || !retryRes.data.longitude) {
+          throw new Error('Invalid Skybitz response on retry');
+        }
+
+        return {
+          lat: +retryRes.data.latitude,
+          lng: +retryRes.data.longitude,
+          speed: +(retryRes.data.speed || 0),
+          time: retryRes.data.timestamp,
+          source: 'SKYBITZ'
+        };
+      } catch (retryError) {
+        throw new Error(`Skybitz retry failed: ${retryError.message}`);
+      }
+    }
+
+    throw new Error(`Skybitz error: ${error.message}`);
+  }
+}
+
+/* ===============================
    SAMSARA: Company routing
 ================================ */
-async function getVehicleLocation(companyName, samsaraVehicleId) {
-  if (!companyName || !samsaraVehicleId) {
-    throw new Error("Missing company name or Samsara Vehicle ID");
+async function getVehicleLocation(companyName, samsaraVehicleId, truckNumber) {
+  if (!companyName) {
+    throw new Error("Missing company name");
   }
 
   const normalized = companyName.toUpperCase().trim();
-  
 
+  // Agar Samsara ID hai, try Samsara first
+  if (samsaraVehicleId) {
+    try {
+      // HA TRANSPORTATION
+      if (normalized.includes("HA TRANSPORTATION") || 
+          normalized.includes("HA TRANS") ||
+          normalized === "HA TRANSPORTATION LLC") {
+        
+        const apiKey = process.env.SAMSARA_API_KEY;
+        if (apiKey) {
+          return await fetchSamsaraLocation(samsaraVehicleId, apiKey, "SAMSARA_HA");
+        }
+      }
+      
+      // 313 LOGISTICS
+      if (normalized.includes("313 LOGISTICS") || 
+          normalized.includes("313LOGISTICS") ||
+          normalized.includes("313 TRANSPORT") ||
+          normalized === "313 LOGISTICS LLC" ||
+          normalized === "313 TRANSPORT LLC") {
+        
+        const apiKey = process.env.SAMSARA_API_KEY313;
+        if (apiKey) {
+          return await fetchSamsaraLocation(samsaraVehicleId, apiKey, "SAMSARA_313");
+        }
+      }
+      
+      // CHANDI LOGISTICS
+      if (normalized.includes("CHANDI LOGISTICS") || 
+          normalized.includes("CHANDILOGISTICS") ||
+          normalized === "CHANDI LOGISTICS LLC") {
+        
+        const apiKey = process.env.SAMSARA_API_KEY_CHANDI;
+        if (apiKey) {
+          return await fetchSamsaraLocation(samsaraVehicleId, apiKey, "SAMSARA_CHANDI");
+        }
+      }
+    } catch (samsaraError) {
+      // Samsara fail, try Skybitz fallback
+    }
+  }
 
-  // HA TRANSPORTATION
-  if (normalized.includes("HA TRANSPORTATION") || 
-      normalized.includes("HA TRANS") ||
-      normalized === "HA TRANSPORTATION LLC") {
-    
-    const apiKey = process.env.SAMSARA_API_KEY;
-    if (!apiKey) {
-      throw new Error("❌ SAMSARA_API_KEY not set");
-    }
-    
-    return await fetchSamsaraLocation(samsaraVehicleId, apiKey, "SAMSARA_HA");
-  }
-  
-  // 313 LOGISTICS
-  if (normalized.includes("313 LOGISTICS") || 
-      normalized.includes("313LOGISTICS") ||
-      normalized.includes("313 TRANSPORT") ||
-      normalized === "313 LOGISTICS LLC" ||
-      normalized === "313 TRANSPORT LLC") {
-    
-    const apiKey = process.env.SAMSARA_API_KEY313;
-    if (!apiKey) {
-      throw new Error("❌ SAMSARA_API_KEY313 not set");
-    }
-    
-    return await fetchSamsaraLocation(samsaraVehicleId, apiKey, "SAMSARA_313");
-  }
-  
-  // CHANDI LOGISTICS
-  if (normalized.includes("CHANDI LOGISTICS") || 
-      normalized.includes("CHANDILOGISTICS") ||
-      normalized === "CHANDI LOGISTICS LLC") {
-    
-    const apiKey = process.env.SAMSARA_API_KEY_CHANDI;
-    if (!apiKey) {
-      throw new Error("❌ SAMSARA_API_KEY_CHANDI not set");
-    }
-    
-    return await fetchSamsaraLocation(samsaraVehicleId, apiKey, "SAMSARA_CHANDI");
+  // Fallback to Skybitz if Samsara fails or no Samsara ID
+  if (truckNumber) {
+    return await fetchSkybitzLocation(truckNumber);
   }
 
-  throw new Error(`❌ Unsupported company: "${companyName}"`);
+  throw new Error(`Cannot get location - no Samsara ID or truck number`);
 }
 
-
+/* ===============================
+   GEOCODING
+================================ */
 async function geocodeAddress(address) {
   if (!address) throw new Error("Address missing");
 
@@ -229,12 +326,13 @@ async function geocodeAddress(address) {
       formattedAddress: result.formatted_address
     };
   } catch (error) {
-    console.error(`❌ Geocoding Error for "${address}":`, error.message);
     throw error;
   }
 }
 
-
+/* ===============================
+   GOOGLE ROUTES ETA
+================================ */
 async function getGoogleRoutesETA(originLat, originLng, destAddress) {
   try {
     const res = await axios.post(
@@ -254,7 +352,7 @@ async function getGoogleRoutesETA(originLat, originLng, destAddress) {
       {
         headers: {
           "Content-Type": "application/json",
-          "X-Goog-Api-Key": 'AIzaSyDL5s9711qsNyZ7zJ4Tu68_np_Vq9lqMH8',
+          "X-Goog-Api-Key": process.env.GOOGLE_MAPS_API_KEY,
           "X-Goog-FieldMask": "routes.duration,routes.distanceMeters"
         },
         timeout: 10000
@@ -275,12 +373,13 @@ async function getGoogleRoutesETA(originLat, originLng, destAddress) {
       source: "GOOGLE_ROUTES"
     };
   } catch (error) {
-    console.error("❌ Google Routes API Error:", error.message);
     return null;
   }
 }
 
-
+/* ===============================
+   FALLBACK ETA
+================================ */
 function getIntelligentSpeed(currentSpeed, distanceKm) {
   if (currentSpeed > 60) return currentSpeed * 0.85;
   if (currentSpeed > 10) return currentSpeed * 0.75;
@@ -308,10 +407,12 @@ function getFallbackETA(originLat, originLng, destLat, destLng, currentSpeed) {
   };
 }
 
-
-function getDeliveryDay(etaHours, nowPST) {       
-  const deliveryTime = new Date(nowPST);
-  deliveryTime.setHours(deliveryTime.getHours() + etaHours);
+/* ===============================
+   DELIVERY DAY - FIXED VERSION
+================================ */
+function getDeliveryDay(etaHours, nowPST, scheduledDeliveryPST) {       
+  const estimatedDeliveryTime = new Date(nowPST);
+  estimatedDeliveryTime.setHours(estimatedDeliveryTime.getHours() + etaHours);
   
   const todayStart = new Date(nowPST);
   todayStart.setHours(0, 0, 0, 0);
@@ -322,9 +423,18 @@ function getDeliveryDay(etaHours, nowPST) {
   const tomorrowEnd = new Date(tomorrowStart);
   tomorrowEnd.setDate(tomorrowEnd.getDate() + 1);
   
-  if (deliveryTime >= todayStart && deliveryTime < tomorrowStart) {
+  // Already in PST, just convert to Date object
+  const scheduledDate = scheduledDeliveryPST ? new Date(scheduledDeliveryPST) : null;
+  
+  // Check if late (estimated delivery is after scheduled delivery)
+  if (scheduledDate && estimatedDeliveryTime > scheduledDate) {
+    return "LATE";
+  }
+  
+  // Check delivery day
+  if (estimatedDeliveryTime >= todayStart && estimatedDeliveryTime < tomorrowStart) {
     return "TODAY";
-  } else if (deliveryTime >= tomorrowStart && deliveryTime < tomorrowEnd) {
+  } else if (estimatedDeliveryTime >= tomorrowStart && estimatedDeliveryTime < tomorrowEnd) {
     return "TOMORROW";
   } else {
     return "LATER";
@@ -332,61 +442,59 @@ function getDeliveryDay(etaHours, nowPST) {
 }
 
 /* ===============================
-   MAIN: Process In-Transit Loads
+   MAIN: Process In-Transit from Map
 ================================ */
-export async function processInTransitLoads(loads, truckMap) {
-  const truckDataMap = new Map(Object.entries(truckMap));
+export async function processInTransitLoads(loads, truckMap, inTransitTruckMap) {
   const nowPST = getPSTNow();
-
-
-
   const results = { inTransit: [], errors: [] };
 
-  for (const [loadId, load] of Object.entries(loads)) {
-    if (load.loadStatus?.toUpperCase() !== "IN TRANSIT") continue;
+  const entries = inTransitTruckMap instanceof Map 
+    ? Array.from(inTransitTruckMap.entries())
+    : Object.entries(inTransitTruckMap || {});
 
-    
-
+  for (const [truckKey, truckData] of entries) {
     try {
-      const loadTruckId = extractSingleValue(load.truck);
-      const loadSamsaraId = extractSingleValue(load.samsaraVehicleId);
+      const {
+        truckName,
+        truckId,
+        companyName,
+        samsaraVehicleId,
+        loadNumber,
+        receiverAddress,
+        deliveryDateTime,
+        trailerName,
+        hasNextBooking
+      } = truckData;
 
-      // Find truck
-      let truckData =
-        truckDataMap.get(loadTruckId) ||
-        [...truckDataMap.values()].find(
-          t => t.samsaraVehicleId === loadSamsaraId
-        );
-
-      if (!truckData) {
-        throw new Error(
-          `Truck not resolvable (truckId=${loadTruckId}, samsara=${loadSamsaraId})`
-        );
+      if (!receiverAddress) {
+        throw new Error('No receiver address');
       }
 
-
-      // Get live location
+      // Get truck location (Samsara or Skybitz)
       let liveLocation = null;
-      if (loadSamsaraId) {
+      const truckNumber = truckName?.match(/\d+/)?.[0];
+      
+      try {
         liveLocation = await getVehicleLocation(
-          truckData.companyName,
-          loadSamsaraId
+          companyName,
+          samsaraVehicleId,
+          truckNumber
         );
-        
+      } catch (locationError) {
+        throw new Error(`Location unavailable: ${locationError.message}`);
       }
 
-      // Calculate ETA using Google API
+      // Calculate ETA
       let etaData = null;
-      if (liveLocation && load.receiver) {
+      if (liveLocation) {
         etaData = await getGoogleRoutesETA(
           liveLocation.lat,
           liveLocation.lng,
-          load.receiver
+          receiverAddress
         );
         
         if (!etaData) {
-          // Fallback to geocoding + haversine
-          const destCoords = await geocodeAddress(load.receiver);
+          const destCoords = await geocodeAddress(receiverAddress);
           etaData = getFallbackETA(
             liveLocation.lat,
             liveLocation.lng,
@@ -398,138 +506,84 @@ export async function processInTransitLoads(loads, truckMap) {
       }
 
       if (!etaData) {
-        throw new Error("Could not calculate ETA");
+        throw new Error('Could not calculate ETA');
       }
 
-      
-      const deliveryDay = getDeliveryDay(etaData.durationHours, nowPST);
+      // Calculate delivery day and estimated delivery time
+      const deliveryDay = getDeliveryDay(
+        etaData.durationHours, 
+        nowPST,
+        deliveryDateTime
+      );
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-      
-      // Calculate estimated delivery time - PST mein
       const estimatedDeliveryTime = new Date(nowPST);
       estimatedDeliveryTime.setMinutes(estimatedDeliveryTime.getMinutes() + etaData.durationMinutes);
 
-    
-
-
-      
-      
-
       results.inTransit.push({
-        loadNumber: load.loadNumber,
-        truckName: truckData.truckName,
-        truckId: loadTruckId,
-        receiver: load.receiver,
+        loadNumber,
+        truckName,
+        truckId,
+        trailerName,
+        receiver: receiverAddress,
+        scheduledDelivery: deliveryDateTime, // Already in PST from data source
         etaHours: etaData.durationHours,
         etaMinutes: etaData.durationMinutes,
         distanceMiles: etaData.distanceMiles,
-        deliveryDay: deliveryDay, // TODAY, TOMORROW, LATER
+        deliveryDay,
         estimatedDeliveryTime: estimatedDeliveryTime.toISOString(),
         currentSpeed: liveLocation?.speed || 0,
-        source: etaData.source
+        source: etaData.source,
+        locationSource: liveLocation.source,
+        hasNextBooking
       });
 
-    
-
     } catch (err) {
-    
       results.errors.push({
-        loadNumber: load.loadNumber,
+        truckName: truckData.truckName,
+        loadNumber: truckData.loadNumber,
         error: err.message
       });
     }
   }
 
-  
+  if (results.errors.length > 0) {
+    console.log('Error details:', JSON.stringify(results.errors, null, 2));
+  }
+
   return results;
 }
 
 /* ===============================
-   FIXED: Calculate Available Trucks
-   Logic: Jo truck NA in-transit, NA booked = AVAILABLE
+   CALCULATE AVAILABLE TRUCKS
 ================================ */
 export function calculateAvailableTrucks(inTransitResults, bookedLoads, allTrucks) {
   const nowPST = getPSTNow();
   const todayStart = new Date(nowPST);
-
-
-
-  // console.log(`\n📅 Today's PST Start: `,inTransitResults);
- 
-  // console.log(`\n📅 Today's PST Start: `,inTransitResults.length);
-  
-  const twoDaysLater = new Date(todayStart);
-  twoDaysLater.setDate(twoDaysLater.getDate() + 2);
-
+  todayStart.setHours(0, 0, 0, 0);
 
   const availableTrucks = [];
   const inTransitTruckIds = new Set();
   const bookedTruckIds = new Set();
 
-  // Step 1: Identify ALL in-transit trucks
- 
+  // In-transit trucks
   for (const inTransit of inTransitResults) {
     inTransitTruckIds.add(inTransit.truckId);
-  
   }
 
-  // Step 2: Identify ALL booked trucks
- 
+  // Booked trucks
   for (const booking of bookedLoads) {
     const truckId = extractSingleValue(booking.truck);
-    if (!truckId) continue;
-    
-    const puDate = getPSTDayStart(booking.puDateTime);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    bookedTruckIds.add(truckId);
-    
-    
+    if (truckId) {
+      bookedTruckIds.add(truckId);
+    }
   }
 
-  // Step 3: Find completely FREE trucks (unique)
-  
-  
+  // Completely free trucks
   for (const [truckId, truckData] of Object.entries(allTrucks)) {
-    // Agar truck in-transit hai YA booked hai = SKIP
     if (inTransitTruckIds.has(truckId) || bookedTruckIds.has(truckId)) {
       continue;
     }
 
-    // Bhai ye truck 100% FREE hai!
-  
-    
     availableTrucks.push({
       truckName: truckData.truckName,
       truckId: truckId,
@@ -539,26 +593,15 @@ export function calculateAvailableTrucks(inTransitResults, bookedLoads, allTruck
     });
   }
 
-  // Step 4: Additional check - In-transit trucks delivering TODAY with no next booking
-  
-  
+  // In-transit trucks delivering today with NO next booking
   const alreadyAddedTruckIds = new Set(availableTrucks.map(t => t.truckId));
   
   for (const inTransit of inTransitResults) {
-    if (inTransit.deliveryDay !== "TODAY") continue;
-
-    // Skip if already added in Step 3
     if (alreadyAddedTruckIds.has(inTransit.truckId)) {
-   
       continue;
     }
 
-    // Check if this truck has ANY booking
-    const hasAnyBooking = bookedTruckIds.has(inTransit.truckId);
-
-    if (!hasAnyBooking) {
-      
-      
+    if (!inTransit.hasNextBooking && inTransit.deliveryDay === "TODAY") {
       availableTrucks.push({
         truckName: inTransit.truckName,
         truckId: inTransit.truckId,
@@ -567,12 +610,9 @@ export function calculateAvailableTrucks(inTransitResults, bookedLoads, allTruck
         estimatedFreeTime: new Date(inTransit.estimatedDeliveryTime).toLocaleString()
       });
       alreadyAddedTruckIds.add(inTransit.truckId);
-    } else {
-      
     }
   }
 
-  // Final Summary
   const totalBusy = inTransitTruckIds.size + bookedTruckIds.size - 
                     [...inTransitTruckIds].filter(id => bookedTruckIds.has(id)).length;
 

@@ -271,9 +271,7 @@ function buildTruckMap(truckRecords) {
   return truckMap;
 }
 
-/**
- * Step 2: Trailer Map banao (trailer record ID se trailer details)
- */
+
 async function buildTrailerMap(loadRecords) {
   const trailerIds = new Set();
   
@@ -285,7 +283,6 @@ async function buildTrailerMap(loadRecords) {
 
   if (trailerIds.size === 0) return new Map();
 
-  // Airtable se trailer data fetch karo
   const { recordMap } = await trailersIfs(TRAILER_TABLE_ID, [...trailerIds]);
 
   const trailerMap = new Map();
@@ -302,107 +299,205 @@ async function buildTrailerMap(loadRecords) {
   return trailerMap;
 }
 
-/**
- * Step 3: Booked Loads ka map banao (truck-wise next bookings)
- */
-function getBookedLoadsByTruck(loadRecords, truckMap) {
 
+function getBookedLoadsByTruck(loadRecords, truckMap) {
 
   const bookedMap = new Map();
 
-  for (const load of loadRecords) { 
+  const normalize = (v) =>
+    v?.toUpperCase().replace(/\s+/g, " ").replace(/\s*-\s*/g, " - ").trim();
 
-
-    // console.log("Processing Load:", load["Load Number"], "Status:", load["Load Status"]);
-    if (load["Load Status"]?.toUpperCase() !== "BOOKED") continue;
-    
-
-
-
-
-
-    const truckIds = Array.isArray(load.Truckname) ? load.Truckname : [load.TruckName].filter(Boolean);
-     console.log("  Associated Trucks:", truckIds);
-    
-    for (const truckId of truckIds) {
-      const truck = truckMap.get(truckId);
-      if (!truck) continue;
-
-      if (!bookedMap.has(truck.Truckname)) {
-        bookedMap.set(truck.Truckname, []);
-      }
-
-      bookedMap.get(truck.Truckname).push({
-        loadNumber: load["Load Number"] ?? "",
-        puDateTime: load["PU Date/Time"] ?? "",
-        deliveryDateTime: load["Delivery Date/Time"] ?? "",
-        shipper: load["Full Address Shipper Array"] ?? "",
-        receiver: load["Full Address Receiver Array"] ?? ""
-      });
+  // 🔹 truckName → truck
+  const truckNameMap = new Map();
+  for (const truck of truckMap.values()) {
+    if (truck?.truckName) {
+      truckNameMap.set(normalize(truck.truckName), truck);
     }
   }
-   console.log('bookedMap',bookedMap)
+
+  let processed = 0;
+  let keyIndex = 0;
+
+  for (const load of loadRecords) {
+
+    if (load["Load Status"]?.toUpperCase() !== "BOOKED") continue;
+
+    const truckNames =
+      Array.isArray(load.Truckname) ? load.Truckname :
+      Array.isArray(load.TruckName) ? load.TruckName :
+      Array.isArray(load.Truck) ? load.Truck :
+      [null];
+
+    for (let tName of truckNames) {
+
+      const normalized = normalize(tName);
+      const truck = truckNameMap.get(normalized) || null;
+
+      // ✅ GUARANTEED UNIQUE KEY
+      const mapKey = `BOOKED_${keyIndex++}`;
+
+      const deliveryDateTimePST = toPST(load["Delivery Date/Time"]);
+
+      const puDateTimePST = toPST(load["PU Date/Time"]);
+
+      bookedMap.set(mapKey, {
+        truckName: truck?.truckName ?? tName ?? null,
+        truckId: truck?.truckId ?? null,
+        companyName: truck?.companyName ?? null,
+        samsaraVehicleId: truck?.samsaraVehicleId ?? null,
+
+        loadNumber: load["Load Number"] ?? null,
+        puDateTime: puDateTimePST ?? null,
+        deliveryDateTime: deliveryDateTimePST ?? null,
+        shipper: load["Full Address Shipper Array"] ?? null,
+        receiver: load["Full Address Receiver Array"] ?? null
+      });
+
+      processed++;
+    }
+  }
+
+  console.log("✅ BOOKED loads processed:", processed);
+  console.log("✅ BOOKED loads in MAP:", bookedMap.size);
+
   return bookedMap;
 }
 
-/**
- * Step 4: MAIN - In-Transit Trucks ka complete map banao
- */
+
+function toPST(dateInput) {
+  if (!dateInput) return null;
+
+  const pstDate = new Date(
+    new Date(dateInput).toLocaleString("en-US", {
+      timeZone: "America/Los_Angeles"
+    })
+  );
+
+  const pad = (n) => String(n).padStart(2, "0");
+
+  return `${pstDate.getFullYear()}-${pad(pstDate.getMonth() + 1)}-${pad(pstDate.getDate())} ` +
+         `${pad(pstDate.getHours())}:${pad(pstDate.getMinutes())}:${pad(pstDate.getSeconds())}`;
+}
+
+
+
+
+
 async function buildInTransitTruckMap(loadRecords, truckMap, trailerMap, bookedMap) {
+
   const inTransitMap = new Map();
 
+  const extractSingle = (val) =>
+    Array.isArray(val) ? val[0] : val ?? null;
+
+  // 🔹 truckName → truck
+  const truckNameMap = new Map();
+  for (const truck of truckMap.values()) {
+    if (truck?.truckName) {
+      truckNameMap.set(truck.truckName.trim(), truck);
+    }
+  }
+
   for (const load of loadRecords) {
+
     if (load["Load Status"]?.toUpperCase() !== "IN TRANSIT") continue;
 
-    // Truck IDs nikalo
-    const truckIds = Array.isArray(load.Truck) ? load.Truck : [load.Truck].filter(Boolean);
-    
-    for (const truckId of truckIds) {
-      const truck = truckMap.get(truckId);
+    const truckNames = Array.isArray(load.Truckname)
+      ? load.Truckname
+      : [load.TruckName].filter(Boolean);
+
+    for (let truckName of truckNames) {
+
+      truckName = truckName.trim();
+      const truck = truckNameMap.get(truckName);
       if (!truck) continue;
 
-      // Samsara Vehicle ID - pehle truck se, nahi toh load se
-      let samsaraVehicleId = truck.samsaraVehicleId;
-      if (!samsaraVehicleId) {
-        samsaraVehicleId = extractSingle(load["Samsara Vehicle ID"]);
-      }
+      // ❗ already added → skip
+      if (inTransitMap.has(truck.truckName)) continue;
 
-      // Trailer details nikalo
-      let trailerInfo = null;
+      const samsaraVehicleId =
+        truck.samsaraVehicleId ||
+        extractSingle(load["Samsara Vehicle ID"]) ||
+        null;
+
+      // 🔹 Trailer
+      let trailerId = null;
+      let trailerName = null;
+      let trailerNumber = null;
+      let trailerType = null;
+      let trailerStatus = null;
+
+
+
+
+      // 🔹 Skybitz Trailer Location
+const currentTrailerAddress = extractSingle(
+  load["Current Address (Skybitz) (from Trailers)"]
+);
+
+const trailerLocationUpdatedAt = extractSingle(
+  load["Last Modified Time (from Trailers)"]
+);
+
+
       const trailerRecordId = extractSingle(load.Trailers);
       if (trailerRecordId && trailerMap.has(trailerRecordId)) {
         const trailer = trailerMap.get(trailerRecordId);
-        trailerInfo = {
-          trailerId: trailer.id,
-          trailerName: trailer.name,
-          trailerNumber: trailer.trailerNumber,
-          trailerType: trailer.type,
-          trailerStatus: trailer.status
-        };
+        trailerId = trailer?.id ?? null;
+        trailerName = trailer?.name ?? null;
+        trailerNumber = trailer?.trailerNumber ?? null;
+        trailerType = trailer?.type ?? null;
+        trailerStatus = trailer?.status ?? null;
       }
 
-      // Next booking info (agar hai toh)
-      const nextBookings = bookedMap.get(truck.truckName) || [];
+      // 🔹 NEXT BOOKED LOAD
+      const nextBookings = bookedMap.get(truck.truckName.trim()) || [];
+      const nextBooking = nextBookings[0] || null;
 
-      // Final data save karo
+
+      const puDateTimePST = toPST(load["PU Date/Time"]);
+      
+
+
+
+
+
+
+
+
+      const deliveryDateTimePST = toPST(load["Delivery Date/Time"]);
+
+      const nextPuDateTimePST = toPST(nextBooking?.puDateTime);
+      const nextDeliveryDateTimePST = toPST(nextBooking?.deliveryDateTime);
+
       inTransitMap.set(truck.truckName, {
         truckName: truck.truckName,
-        truckId,
+        truckId: truck.truckId,
         companyName: truck.companyName,
-        samsaraVehicleId: samsaraVehicleId || null,
-        
-        // Current Load Info
+        samsaraVehicleId,
+
+        // 🔸 CURRENT IN TRANSIT LOAD (ALL PST)
         loadNumber: load["Load Number"] ?? "",
         shipperAddress: load["Full Address Shipper Array"] ?? "",
         receiverAddress: load["Full Address Receiver Array"] ?? "",
-        puDateTime: load["PU Date/Time"] ?? "",
-        deliveryDateTime: load["Delivery Date/Time"] ?? "",
+        puDateTime: puDateTimePST,
+        deliveryDateTime: deliveryDateTimePST,
+
+        // 🔸 TRAILER
+        trailerId,
+        trailerName,
+        trailerNumber,
+        trailerType,
+        trailerStatus,
+        currentTrailerAddress,
+        trailerLocationUpdatedAt,
         
-        // Trailer Info (if available)
-        trailer: trailerInfo,
-        
-        // Next Bookings (if any)
-        nextBookings: nextBookings.length > 0 ? nextBookings : null,
+        nextLoadNumber: nextBooking?.loadNumber ?? null,
+        nextPuDateTime: nextPuDateTimePST,
+        nextDeliveryDateTime: nextDeliveryDateTimePST,
+        nextShipper: nextBooking?.shipper ?? null,
+        nextReceiver: nextBooking?.receiver ?? null,
+
         hasNextBooking: nextBookings.length > 0
       });
     }
@@ -411,61 +506,47 @@ async function buildInTransitTruckMap(loadRecords, truckMap, trailerMap, bookedM
   return inTransitMap;
 }
 
-/**
- * ===================================
- * MAIN ETAestimation FUNCTION
- * ===================================
- */
+
+
+
+
+
 const ETAestimation = async (req, res) => {
   try {
     // 1️⃣ Data fetch karo
     const loadRecords = await fetchTableRecords(TABLEID, VIEW_ID);
     const truckRecords = await fetchTableRecords(TRUCK_TABLE_ID, TRUCK_VIEW_ID);
-
-   const firstLoad = loadRecords[2];
-   console.log("First Load Record:", firstLoad);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    // 2️⃣ Truck Map banao (Map format)
     const truckMapData = buildTruckMap(truckRecords);
-    // console.log(`✅ Truck Map:`, Array.from(truckMapData.entries()));
+
+
+
+    console.log(loadRecords[5])
 
     // 3️⃣ Trailer Map banao
    const trailerMap = await buildTrailerMap(loadRecords);
-    // console.log(`✅ Trailer Map: ${trailerMap.size} trailers loaded`);
-    // console.log('Trailer Details:', Array.from(trailerMap.values()));
 
-    // 4️⃣ Booked Loads ka map banao
+    
     const bookedMap = getBookedLoadsByTruck(loadRecords, truckMapData);
-     console.log(`✅ Booked Map: ${Array.from(bookedMap.entries())} trucks have next bookings`);
-
-    // 5️⃣ In-Transit Trucks Map
     const inTransitTruckMap = await buildInTransitTruckMap(
       loadRecords,
       truckMapData,
       trailerMap,
       bookedMap
     );
-    // console.log(`✅ In-Transit Map: ${inTransitTruckMap.size} trucks in transit`);
 
-    // 6️⃣ Convert truck map to object for existing tracking functions
+    console.log(inTransitTruckMap)
+
+
+
+
+
+
+
+
+
+
+
+
     const truckMap = {};
     for (const [id, truck] of truckMapData) {
       truckMap[id] = {
@@ -476,7 +557,6 @@ const ETAestimation = async (req, res) => {
       };
     }
 
-    // 7️⃣ Shipper/Receiver records fetch karo
     const srIds = new Set();
     loadRecords.forEach(r => {
       r.Shipper?.forEach(id => srIds.add(id));
@@ -512,15 +592,14 @@ const ETAestimation = async (req, res) => {
       }
     }
 
-    // 9️⃣ Process in-transit loads for ETA calculation
-    const inTransitResults = await processInTransitLoads(loads, truckMap);
+     const inTransitResults = await processInTransitLoads(loads, truckMap, inTransitTruckMap);
 
     // 🔟 Calculate truck availability
-    const availabilityResults = calculateAvailableTrucks(
-      inTransitResults.inTransit,
-      bookedLoads,
-      truckMap
-    );
+    // const availabilityResults = calculateAvailableTrucks(
+    //   inTransitResults.inTransit,
+    //   bookedLoads,
+    //   truckMap
+    // );
 
     // ✅ Final Response
     res.status(200).json({
@@ -528,7 +607,7 @@ const ETAestimation = async (req, res) => {
       timestamp: new Date().toISOString(),
       
       // In-Transit Trucks with Full Details
-      inTransitTrucksDetails: Array.from(inTransitTruckMap.values()),
+      // inTransitTrucksDetails: Array.from(inTransitTruckMap.values()),
       
       // ETA Calculation Results
       inTransit: {
@@ -537,14 +616,14 @@ const ETAestimation = async (req, res) => {
       },
       
       // Availability Results
-      availability: {
-        summary: availabilityResults.summary,
-        available: availabilityResults.availableTrucks,
-        busy: availabilityResults.busyTrucks
-      },
+      // availability: {
+      //   summary: availabilityResults.summary,
+      //   available: availabilityResults.availableTrucks,
+      //   busy: availabilityResults.busyTrucks
+      // },
       
       // Errors
-      errors: inTransitResults.errors
+      // errors: inTransitResults.errors
     });
 
   } catch (err) {
