@@ -171,7 +171,9 @@ router
 
       // Validate file type
       if (!file.originalname.endsWith('.csv')) {
-        fs.unlinkSync(file.path);
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
         return res.status(400).json({
           success: false,
           message: "⚠️ Only CSV files are accepted"
@@ -187,10 +189,19 @@ router
       const callLogs = normalizeGoogleVoiceCSV(rawRows);
       console.log(`✅ Normalized ${callLogs.length} call logs`);
       
+      // Use analyzeMissedCalls function (imported)
       const report = analyzeCalls(callLogs);
 
-      // Clean up uploaded file
-      fs.unlinkSync(file.path);
+      // Validate report
+      if (!report || !report.summary) {
+        throw new Error('Analysis failed - no valid report generated');
+      }
+
+      // Clean up uploaded file (with safety check)
+      if (fs.existsSync(file.path)) {
+        fs.unlinkSync(file.path);
+        console.log('✅ Temp file deleted');
+      }
 
       // Return comprehensive report with daily and weekly breakdown
       res.json({
@@ -199,112 +210,56 @@ router
         
         // Overall Summary
         summary: {
-          ...report.summary,
-          message: `Analyzed ${report.summary.totalMissedCalls} missed calls across ${report.dailyReports.length} days. ${report.summary.totalCallbacksMade} were called back, ${report.summary.totalNotCalledBack} were not called back.`
+          totalMissedCalls: report.summary.totalMissedCalls || 0,
+          totalCallbacksMade: report.summary.totalCallbacksMade || 0,
+          totalNotCalledBack: report.summary.totalNotCalledBack || 0,
+          callbackSuccessRate: report.summary.callbackSuccessRate || "0%",
+          message: report.summary.message || `Analyzed ${report.summary.totalMissedCalls || 0} missed calls. ${report.summary.totalCallbacksMade || 0} were called back, ${report.summary.totalNotCalledBack || 0} were not called back.`
         },
 
-        // 📅 DAILY REPORTS - Har din ka complete breakdown
-        dailyReports: {
-          title: "📅 Day-wise Call Analysis",
-          totalDays: report.dailyReports.length,
-          reports: report.dailyReports.map(day => ({
-            date: day.dateFormatted,
-            dayOfWeek: day.dayOfWeek,
-            summary: {
-              totalMissedCalls: day.totalMissedCalls,
-              totalCallbacks: day.totalCallbacks,
-              notCalledBack: day.notCalledBack,
-              onTimeCallbacks: day.onTimeCallbacks,
-              lateCallbacks: day.lateCallbacks,
-              callbackRate: day.callbackRate
-            },
-            timing: {
-              jobHoursCalls: day.jobHoursCalls,
-              afterHoursCalls: day.afterHoursCalls,
-              averageResponseTime: day.averageResponseTime,
-              fastestResponse: day.fastestResponseFormatted,
-              slowestResponse: day.slowestResponseFormatted
-            },
-            details: {
-              missedCalls: day.missedCallsList,
-              callbacks: day.callbacksList
-            }
-          })),
-          bestDay: report.dailyReports.length > 0 
-            ? report.dailyReports.reduce((best, day) => {
-                if (!best || (day.totalCallbacks > 0 && day.fastestResponse < best.fastestResponse)) {
-                  return day;
-                }
-                return best;
-              }, null)
-            : null,
-          worstDay: report.dailyReports.length > 0
-            ? report.dailyReports.reduce((worst, day) => {
-                if (!worst || day.notCalledBack > worst.notCalledBack) {
-                  return day;
-                }
-                return worst;
-              }, null)
-            : null
-        },
-
-        // 📊 WEEKLY REPORTS - Har week ka summary
-        weeklyReports: {
-          title: "📊 Week-wise Call Summary",
-          totalWeeks: report.weeklyReports.length,
-          reports: report.weeklyReports.map(week => ({
-            weekRange: week.weekRange,
-            summary: {
-              totalMissedCalls: week.totalMissedCalls,
-              totalCallbacks: week.totalCallbacks,
-              notCalledBack: week.notCalledBack,
-              onTimeCallbacks: week.onTimeCallbacks,
-              lateCallbacks: week.lateCallbacks,
-              callbackRate: week.callbackRate
-            },
-            timing: {
-              jobHoursCalls: week.jobHoursCalls,
-              afterHoursCalls: week.afterHoursCalls,
-              averageResponseTime: week.averageResponseTime
-            }
-          }))
-        },
-
-        // 👥 EMPLOYEE PERFORMANCE - Detailed employee-wise breakdown
-        employeePerformance: {
+        // 👥 EMPLOYEE REPORTS - Employee-wise breakdown
+        employeeReports: {
           title: "👥 Employee Performance Report",
-          totalEmployees: report.employeePerformance.length,
-          ranking: report.employeePerformance.map((emp, index) => ({
+          totalEmployees: report.employeeReports ? report.employeeReports.length : 0,
+          ranking: report.employeeReports ? report.employeeReports.map((emp, index) => ({
             rank: index + 1,
             employeeName: emp.employeeName,
+            employeeEmail: emp.employeeEmail,
             overview: {
-              totalMissedCallsReceived: emp.totalMissedCallsReceived,
-              totalCallbacksMade: emp.totalCallbacksMade,
-              notCalledBack: emp.notCalledBack,
-              callbackRate: emp.callbackRate
+              totalMissedCallsReceived: emp.totalMissedCalls || 0,
+              totalCallbacksMade: emp.totalCallbacks || 0,
+              notCalledBack: emp.notCalledBack || 0,
+              callbackRate: emp.callbackRate || "0%"
             },
-            performance: {
-              onTimeCallbacks: emp.onTimeCallbacks,
-              lateCallbacks: emp.lateCallbacks,
-              averageResponseTime: emp.averageResponseTime,
-              fastestCallback: emp.fastestCallbackFormatted,
-              slowestCallback: emp.slowestCallbackFormatted,
-              rating: emp.performanceRating
-            },
-            dailyBreakdown: Object.values(emp.dailyBreakdown || {})
-          })),
-          topPerformer: report.employeePerformance.length > 0
-            ? report.employeePerformance.reduce((best, emp) => {
-                if (emp.totalCallbacksMade === 0) return best;
-                if (!best || emp.fastestCallback < best.fastestCallback) {
+            missedCalls: emp.missedCallsList || [],
+            callbacks: emp.callbacksList || []
+          })) : [],
+          topPerformer: report.employeeReports && report.employeeReports.length > 0
+            ? report.employeeReports.reduce((best, emp) => {
+                if ((emp.totalCallbacks || 0) === 0) return best;
+                if (!best || (emp.totalCallbacks || 0) > (best.totalCallbacks || 0)) {
                   return emp;
                 }
                 return best;
               }, null)
             : null,
-          mostMissedCalls: report.employeePerformance.length > 0
-            ? report.employeePerformance[0]
+          mostMissedCalls: report.employeeReports && report.employeeReports.length > 0
+            ? report.employeeReports[0]
             : null
+        },
+
+        // 📋 ALL MISSED CALLS (Not Called Back)
+        allMissedCallbacks: {
+          title: "❌ All Missed Calls Not Returned",
+          count: report.allMissedCallbacks ? report.allMissedCallbacks.length : 0,
+          calls: report.allMissedCallbacks || []
+        },
+
+        // 📋 ALL SUCCESSFUL CALLBACKS
+        allSuccessfulCallbacks: {
+          title: "✅ All Successful Callbacks",
+          count: report.allSuccessfulCallbacks ? report.allSuccessfulCallbacks.length : 0,
+          calls: report.allSuccessfulCallbacks || []
         },
 
         // Metadata
@@ -322,10 +277,11 @@ router
     } catch (err) {
       console.error('❌ Call report error:', err);
       
-      // Clean up file if it exists
-      if (req.files?.[0]?.path) {
+      // Clean up file if it exists (with safety check)
+      if (req.files?.[0]?.path && fs.existsSync(req.files[0].path)) {
         try {
           fs.unlinkSync(req.files[0].path);
+          console.log('✅ Temp file deleted after error');
         } catch (unlinkErr) {
           console.error('Failed to delete temp file:', unlinkErr);
         }
