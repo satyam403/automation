@@ -236,7 +236,7 @@
 
 import { fetchTableRecords, fetchSHipperReceiverwithRecordIds, trailersIfs } from "../apicall/airtablesd.js";
 import { processInTransitLoads, calculateAvailableTrucks } from "../services/tracking.js";
-
+import multer from "multer"
 const TABLEID = "tblO5X9igZQEzaWfw";
 const VIEW_ID = "viwiCMhtDtFXbaPwg";
 const TRUCK_TABLE_ID = "tbldhqN3luB9jqEpV";
@@ -646,4 +646,348 @@ const geofancing = async (req, res) => {
   });
 };
 
-export { ETAestimation, geofancing };
+export {ETAestimation,geofancing}
+// Call details 
+
+import dayjs from 'dayjs';
+import isoWeek from 'dayjs/plugin/isoWeek.js';
+dayjs.extend(isoWeek);
+
+const JOB_START_HOUR = 9;  // 9 AM
+const JOB_END_HOUR = 18;   // 6 PM
+const CALLBACK_WINDOW_MINUTES = 30;
+
+function cleanNumber(num) {
+  if (!num) return '';
+  return num.replace(/\D/g, '');
+}
+
+function formatDuration(minutes) {
+  if (minutes < 1) {
+    return `${Math.round(minutes * 60)} seconds`;
+  } else if (minutes < 60) {
+    return `${Math.round(minutes)} minutes`;
+  } else {
+    const hours = Math.floor(minutes / 60);
+    const mins = Math.round(minutes % 60);
+    return `${hours} hour${hours > 1 ? 's' : ''} ${mins > 0 ? mins + ' minute' + (mins !== 1 ? 's' : '') : ''}`;
+  }
+}
+
+// 🔥 MANUAL INTERNAL NUMBERS LIST (Optional - can be empty)
+// Only add numbers here if you want to force them as internal
+const MANUAL_INTERNAL_NUMBERS = [
+  // Leave empty to rely on auto-detection only
+  // Add specific numbers only if needed
+].map(num => cleanNumber(num));
+
+export function analyzeCalls(callLogs) {
+  if (!Array.isArray(callLogs) || callLogs.length === 0) {
+    return {
+      summary: { totalIncomingCalls: 0, totalMissedCalls: 0, totalCallbacksMade: 0, totalNotCalledBack: 0, averageCallbackTime: "0 minutes", callbackSuccessRate: "0%" },
+      dailyReports: [],
+      weeklyReports: [],
+      employeePerformance: [],
+      internalNumbersDetected: { count: 0, numbers: [], employees: [] }
+    };
+  }
+
+  // 🔥 AUTO-DETECT INTERNAL EMPLOYEE NUMBERS
+  const employeeNumbers = new Set();
+  const employeeEmails = new Set();
+  
+  callLogs.forEach(log => {
+    if (log.actor || log.description) {
+      if (log.from) employeeNumbers.add(cleanNumber(log.from));
+      if (log.to) employeeNumbers.add(cleanNumber(log.to));
+      if (log.actor && log.actor.includes('@')) employeeEmails.add(log.actor);
+      if (log.description && log.description.includes('@')) employeeEmails.add(log.description);
+    }
+  });
+
+  const incomingNumbers = new Set();
+  const outgoingNumbers = new Set();
+  
+  callLogs.forEach(log => {
+    const cleanNum = cleanNumber(log.from || log.to);
+    if (log.type === "Call Received") {
+      incomingNumbers.add(cleanNum);
+    } else if (log.type === "Call Placed") {
+      outgoingNumbers.add(cleanNum);
+    }
+  });
+
+  incomingNumbers.forEach(num => {
+    if (outgoingNumbers.has(num)) {
+      employeeNumbers.add(num);
+    }
+  });
+
+  console.log(`🔍 Auto-detected ${employeeNumbers.size} internal employee numbers`);
+
+  const isInternalNumber = (number) => {
+    const cleanNum = cleanNumber(number);
+    return cleanNum && employeeNumbers.has(cleanNum);
+  };
+
+  const incomingCalls = callLogs.filter(c => c.type === "Call Received");
+  const outgoingCalls = callLogs.filter(c => c.type === "Call Placed");
+
+  console.log(`📊 Processing ${incomingCalls.length} incoming and ${outgoingCalls.length} outgoing calls`);
+
+  const dailyData = {};
+  const weeklyData = {};
+  const employeeData = {};
+  
+  let totalCallbackTime = 0;
+  let totalCallbackCount = 0;
+  const allMissedCallbacks = [];
+  const allSuccessfulCallbacks = [];
+  const processedIncoming = new Set();
+
+  incomingCalls.forEach((inCall, index) => {
+    const receivedTime = dayjs(inCall.timestamp);
+    const dateKey = receivedTime.format('YYYY-MM-DD');
+    const weekKey = `${receivedTime.year()}-W${receivedTime.isoWeek()}`;
+    const dayName = receivedTime.format('dddd');
+    const hour = receivedTime.hour();
+    const callId = `${inCall.from}_${inCall.timestamp}`;
+
+    if (processedIncoming.has(callId)) return;
+    processedIncoming.add(callId);
+
+    if (!dailyData[dateKey]) {
+      dailyData[dateKey] = {
+        date: dateKey,
+        dateFormatted: receivedTime.format('DD MMM YYYY (dddd)'),
+        dayOfWeek: dayName,
+        totalMissedCalls: 0,
+        totalCallbacks: 0,
+        onTimeCallbacks: 0,
+        lateCallbacks: 0,
+        notCalledBack: 0,
+        jobHoursCalls: 0,
+        afterHoursCalls: 0,
+        totalResponseTime: 0,
+        fastestResponse: null,
+        slowestResponse: null,
+        missedCallsList: [],
+        callbacksList: []
+      };
+    }
+
+    if (!weeklyData[weekKey]) {
+      const weekStart = receivedTime.startOf('isoWeek').format('DD MMM');
+      const weekEnd = receivedTime.endOf('isoWeek').format('DD MMM YYYY');
+      weeklyData[weekKey] = {
+        week: weekKey,
+        weekRange: `${weekStart} - ${weekEnd}`,
+        totalMissedCalls: 0,
+        totalCallbacks: 0,
+        onTimeCallbacks: 0,
+        lateCallbacks: 0,
+        notCalledBack: 0,
+        jobHoursCalls: 0,
+        afterHoursCalls: 0,
+        totalResponseTime: 0
+      };
+    }
+
+    const isJobHours = hour >= JOB_START_HOUR && hour < JOB_END_HOUR;
+    dailyData[dateKey][isJobHours ? 'jobHoursCalls' : 'afterHoursCalls']++;
+    weeklyData[weekKey][isJobHours ? 'jobHoursCalls' : 'afterHoursCalls']++;
+
+    const callerNumber = cleanNumber(inCall.from);
+    if (!callerNumber) return;
+
+    const callDuration = parseFloat(inCall.duration) || 0;
+    const isMissedCall = callDuration === 0;
+
+    // Skip non-missed calls (only track missed calls - duration = 0)
+    if (!isMissedCall) {
+      return;
+    }
+
+    // Track all missed calls (duration = 0)
+    dailyData[dateKey].totalMissedCalls++;
+    weeklyData[weekKey].totalMissedCalls++;
+
+    // Find callback for this missed call
+    let callback = outgoingCalls.find(outCall => {
+      const outgoingTo = cleanNumber(outCall.to);
+      const outTime = dayjs(outCall.timestamp);
+      return outgoingTo === callerNumber && outTime.isAfter(receivedTime);
+    });
+      callback = outgoingCalls.find(outCall => {
+      const outgoingTo = cleanNumber(outCall.to);
+      const outTime = dayjs(outCall.timestamp);
+      
+      if (isInternalNumber(outCall.to)) return false;
+      
+      return outgoingTo === callerNumber && outTime.isAfter(receivedTime);
+    });
+
+    const employeeName = inCall.description || inCall.actor || 'Unknown';
+    
+    if (!employeeData[employeeName]) {
+      employeeData[employeeName] = {
+        employeeName: employeeName,
+        totalMissedCallsReceived: 0,
+        totalCallbacksMade: 0,
+        notCalledBack: 0,
+        onTimeCallbacks: 0,
+        lateCallbacks: 0,
+        totalResponseTime: 0,
+        fastestCallback: null,
+        slowestCallback: null,
+        dailyBreakdown: {}
+      };
+    }
+
+    employeeData[employeeName].totalMissedCallsReceived++;
+
+    if (!callback) {
+      const missedCallInfo = {
+        callerName: inCall.actor || 'Unknown Caller',
+        callerNumber: inCall.from,
+        receivedAt: receivedTime.format('DD MMM YYYY, hh:mm A'),
+        receivedDuring: isJobHours ? 'Job Hours' : 'After Hours',
+        status: "❌ NOT CALLED BACK",
+        whoReceivedCall: employeeName,
+        date: dateKey,
+        dayOfWeek: dayName
+      };
+
+      dailyData[dateKey].notCalledBack++;
+      dailyData[dateKey].missedCallsList.push(missedCallInfo);
+      weeklyData[weekKey].notCalledBack++;
+      employeeData[employeeName].notCalledBack++;
+      allMissedCallbacks.push(missedCallInfo);
+      return;
+    }
+
+    const callbackTime = dayjs(callback.timestamp);
+    const diffMinutes = callbackTime.diff(receivedTime, "minute", true);
+    const roundedDiff = Math.round(diffMinutes);
+    const isOnTime = diffMinutes <= CALLBACK_WINDOW_MINUTES;
+
+    const callbackInfo = {
+      callerName: inCall.actor || 'Unknown Caller',
+      callerNumber: inCall.from,
+      receivedAt: receivedTime.format('DD MMM YYYY, hh:mm A'),
+      calledBackAt: callbackTime.format('DD MMM YYYY, hh:mm A'),
+      responseTime: formatDuration(diffMinutes),
+      responseTimeMinutes: roundedDiff,
+      status: isOnTime ? "✅ On Time" : "⚠️ Late",
+      whoReceivedCall: employeeName,
+      whoCalledBack: callback.actor || callback.description || 'Unknown',
+      date: dateKey,
+      dayOfWeek: dayName
+    };
+
+    dailyData[dateKey].totalCallbacks++;
+    dailyData[dateKey][isOnTime ? 'onTimeCallbacks' : 'lateCallbacks']++;
+    dailyData[dateKey].totalResponseTime += diffMinutes;
+    dailyData[dateKey].callbacksList.push(callbackInfo);
+
+    if (dailyData[dateKey].fastestResponse === null || diffMinutes < dailyData[dateKey].fastestResponse) {
+      dailyData[dateKey].fastestResponse = diffMinutes;
+    }
+    if (dailyData[dateKey].slowestResponse === null || diffMinutes > dailyData[dateKey].slowestResponse) {
+      dailyData[dateKey].slowestResponse = diffMinutes;
+    }
+
+    weeklyData[weekKey].totalCallbacks++;
+    weeklyData[weekKey][isOnTime ? 'onTimeCallbacks' : 'lateCallbacks']++;
+    weeklyData[weekKey].totalResponseTime += diffMinutes;
+
+    employeeData[employeeName].totalCallbacksMade++;
+    employeeData[employeeName][isOnTime ? 'onTimeCallbacks' : 'lateCallbacks']++;
+    employeeData[employeeName].totalResponseTime += diffMinutes;
+
+    if (employeeData[employeeName].fastestCallback === null || diffMinutes < employeeData[employeeName].fastestCallback) {
+      employeeData[employeeName].fastestCallback = diffMinutes;
+    }
+    if (employeeData[employeeName].slowestCallback === null || diffMinutes > employeeData[employeeName].slowestCallback) {
+      employeeData[employeeName].slowestCallback = diffMinutes;
+    }
+
+    if (!employeeData[employeeName].dailyBreakdown[dateKey]) {
+      employeeData[employeeName].dailyBreakdown[dateKey] = {
+        date: dateKey,
+        missedCalls: 0,
+        callbacks: 0,
+        onTime: 0,
+        late: 0
+      };
+    }
+    employeeData[employeeName].dailyBreakdown[dateKey].callbacks++;
+    employeeData[employeeName].dailyBreakdown[dateKey][isOnTime ? 'onTime' : 'late']++;
+
+    allSuccessfulCallbacks.push(callbackInfo);
+    totalCallbackTime += diffMinutes;
+    totalCallbackCount++;
+  });
+
+  const totalExternalMissedCalls = allMissedCallbacks.length + allSuccessfulCallbacks.length;
+  const totalInternalCallsSkipped = incomingCalls.length - totalExternalMissedCalls;
+
+  console.log(`✅ Analysis complete: ${totalCallbackCount} callbacks, ${allMissedCallbacks.length} not called back`);
+  console.log(`⏭️ Skipped ${totalInternalCallsSkipped} internal calls`);
+
+  const dailyReports = Object.values(dailyData).map(day => ({
+    ...day,
+    averageResponseTime: day.totalCallbacks > 0 ? formatDuration(day.totalResponseTime / day.totalCallbacks) : "N/A",
+    fastestResponseFormatted: day.fastestResponse !== null ? formatDuration(day.fastestResponse) : "N/A",
+    slowestResponseFormatted: day.slowestResponse !== null ? formatDuration(day.slowestResponse) : "N/A",
+    callbackRate: day.totalMissedCalls > 0 ? `${((day.totalCallbacks / day.totalMissedCalls) * 100).toFixed(1)}%` : "0%"
+  })).sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  const weeklyReports = Object.values(weeklyData).map(week => ({
+    ...week,
+    averageResponseTime: week.totalCallbacks > 0 ? formatDuration(week.totalResponseTime / week.totalCallbacks) : "N/A",
+    callbackRate: week.totalMissedCalls > 0 ? `${((week.totalCallbacks / week.totalMissedCalls) * 100).toFixed(1)}%` : "0%"
+  })).sort((a, b) => a.week.localeCompare(b.week));
+
+  const employeePerformance = Object.values(employeeData).map(emp => ({
+    ...emp,
+    averageResponseTime: emp.totalCallbacksMade > 0 ? formatDuration(emp.totalResponseTime / emp.totalCallbacksMade) : "N/A",
+    fastestCallbackFormatted: emp.fastestCallback !== null ? formatDuration(emp.fastestCallback) : "N/A",
+    slowestCallbackFormatted: emp.slowestCallback !== null ? formatDuration(emp.slowestCallback) : "N/A",
+    callbackRate: emp.totalMissedCallsReceived > 0 ? `${((emp.totalCallbacksMade / emp.totalMissedCallsReceived) * 100).toFixed(1)}%` : "0%",
+    performanceRating: emp.totalCallbacksMade > 0
+      ? (emp.onTimeCallbacks / emp.totalCallbacksMade >= 0.8 ? "⭐⭐⭐ Excellent" : 
+         emp.onTimeCallbacks / emp.totalCallbacksMade >= 0.6 ? "⭐⭐ Good" : "⭐ Needs Improvement")
+      : "❌ No Callbacks"
+  })).sort((a, b) => b.totalMissedCallsReceived - a.totalMissedCallsReceived);
+
+  return {
+    summary: {
+      totalIncomingCalls: incomingCalls.length,
+      totalExternalCalls: totalExternalMissedCalls,
+      totalInternalCallsSkipped: totalInternalCallsSkipped,
+      totalMissedCalls: totalExternalMissedCalls,
+      totalCallbacksMade: totalCallbackCount,
+      totalNotCalledBack: allMissedCallbacks.length,
+      averageCallbackTime: totalCallbackCount > 0 ? formatDuration(totalCallbackTime / totalCallbackCount) : "0 minutes",
+      callbackSuccessRate: totalExternalMissedCalls > 0 ? `${((totalCallbackCount / totalExternalMissedCalls) * 100).toFixed(1)}%` : "0%",
+      dateRange: callLogs.length > 0 ? {
+        from: dayjs(callLogs[0].timestamp).format('DD MMM YYYY'),
+        to: dayjs(callLogs[callLogs.length - 1].timestamp).format('DD MMM YYYY')
+      } : null
+    },
+    internalNumbersDetected: {
+      count: employeeNumbers.size,
+      manualCount: MANUAL_INTERNAL_NUMBERS.length,
+      autoDetectedCount: employeeNumbers.size - MANUAL_INTERNAL_NUMBERS.length,
+      numbers: Array.from(employeeNumbers),
+      employees: Array.from(employeeEmails),
+      detectionMethod: "Manual List + Auto-Detection"
+    },
+    dailyReports: dailyReports,
+    weeklyReports: weeklyReports,
+    employeePerformance: employeePerformance,
+    allCallbacks: allSuccessfulCallbacks,
+    allMissedCallbacks: allMissedCallbacks
+  };
+}
