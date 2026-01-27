@@ -1179,25 +1179,30 @@ export async function processInTransitLoads(loads, truckMap, inTransitTruckMap) 
         
         locationSource = 'SCHEDULED_ONLY';
       }
+        
+  if (hasNextBooking === false) {
+  results.inTransit.push({
+    loadNumber,
+    truckName,
+    truckId,
+    trailerName,
+    receiver: receiverAddress,
+    scheduledDelivery: deliveryDateTime,
+    etaHours: etaData.durationHours,
+    etaMinutes: etaData.durationMinutes,
+    distanceMiles: etaData.distanceMiles,
+    deliveryDay,
+    estimatedDeliveryTime: estimatedDeliveryTime.toISOString(),
+    currentSpeed: liveLocation?.speed || 0,
+    source: etaData.source,
+    locationSource: locationSource,
+    hasNextBooking: false,
+    lastKnownLocation: liveLocation
+      ? `${liveLocation.lat.toFixed(4)}, ${liveLocation.lng.toFixed(4)}`
+      : 'Unknown'
+  });
+}
 
-      results.inTransit.push({
-        loadNumber,
-        truckName,
-        truckId,
-        trailerName,
-        receiver: receiverAddress,
-        scheduledDelivery: deliveryDateTime,
-        etaHours: etaData.durationHours,
-        etaMinutes: etaData.durationMinutes,
-        distanceMiles: etaData.distanceMiles,
-        deliveryDay,
-        estimatedDeliveryTime: estimatedDeliveryTime.toISOString(),
-        currentSpeed: liveLocation?.speed || 0,
-        source: etaData.source,
-        locationSource: locationSource,
-        hasNextBooking,
-        lastKnownLocation: liveLocation ? `${liveLocation.lat.toFixed(4)}, ${liveLocation.lng.toFixed(4)}` : 'Unknown'
-      });
 
     } catch (err) {
       results.errors.push({

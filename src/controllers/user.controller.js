@@ -449,8 +449,48 @@ const ETAestimation = async (req, res) => {
     );
     const deliveredLoadMap = getTodayDeliveredLoadsByTruck(loadRecords);
    
-const deliveredWithoutBooking =
-  getDeliveredWithoutBookedLoad(deliveredLoadMap, bookedMap);
+   
+    const deliveredWithoutBooking =
+     getDeliveredWithoutBookedLoad(deliveredLoadMap, bookedMap);
+      
+
+
+
+const deliveredReceiverIds = new Set();
+
+for (const [, item] of deliveredWithoutBooking) {
+  if (Array.isArray(item.receiver)) {
+    item.receiver.forEach(id => deliveredReceiverIds.add(id));
+  }
+}
+
+const { recordMap: deliveredReceiverRecordMap } =
+  deliveredReceiverIds.size > 0
+    ? await fetchSHipperReceiverwithRecordIds(
+        SHIPPER_RECEIVER_TABLE_ID,
+        [...deliveredReceiverIds]
+      )
+    : { recordMap: new Map() };
+
+for (const [, item] of deliveredWithoutBooking) {
+  const receiverId = item.receiver?.[0];
+  const receiverRecord = deliveredReceiverRecordMap.get(receiverId);
+
+  if (receiverRecord) {
+    item.receiverDetails = receiverRecord;   // 🔹 full receiver object
+
+    // 🔹 ya sirf address chahiye ho to
+    item.receiverAddress =
+      receiverRecord.address ||
+      receiverRecord["Full Address"] ||
+      receiverRecord["Address"] ||
+      "";
+  } else {
+    item.receiverDetails = null;
+    item.receiverAddress = "";
+  }
+}
+console.log("bhai kal Delivered Load By Truck",deliveredLoadMap)
     const truckMap = {};
     for (const [id, truck] of truckMapData) {
       truckMap[id] = {
@@ -466,7 +506,7 @@ const deliveredWithoutBooking =
       r.Shipper?.forEach(id => srIds.add(id));
       r.Receiver?.forEach(id => srIds.add(id));
     });
-
+   
     const { recordMap } = srIds.size > 0
       ? await fetchSHipperReceiverwithRecordIds(SHIPPER_RECEIVER_TABLE_ID, [...srIds])
       : { recordMap: new Map() };
@@ -506,7 +546,7 @@ const deliveredWithoutBooking =
         count: inTransitResults.inTransit.length,
         loads: inTransitResults.inTransit
       },
-      deliveredWithoutBooking
+      deliveredWithoutBooking: Object.fromEntries(deliveredWithoutBooking)
     
     });
 
